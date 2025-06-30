@@ -4,6 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+var admin = require("firebase-admin");
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -23,20 +24,56 @@ const client = new MongoClient(uri, {
     }
 });
 
+// FB service account
+const serviceAccountString = Buffer.from(process.env.FB_KEY, 'base64').toString('utf8');
+const serviceAccount = JSON.parse(serviceAccountString);
+
+admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
+});
+
+
 async function run() {
     try {
         // Connect the client to the server	(optional starting in v4.7)
         await client.connect();
 
-        const parcelsCollection = client.db("ParcelsCollection").collection("parcels")
-        const paymentCollection = client.db("ParcelsCollection").collection("payment")
+        const parcelsCollection = client.db("ParcelsCollection").collection("parcels");
+        const paymentCollection = client.db("ParcelsCollection").collection("payment");
+        const usersCollection = client.db("ParcelsCollection").collection("users");
+
+        const verifyToken = async (req, res, next) => {
+            const authHeaders = req.headers.authorization;
+
+            if (!authHeaders || !authHeaders.startsWith('Bearer ')) {
+                return res.status(401).json({ message: 'Unauthorized: No or invalid Authorization header' });
+            }
+
+            const token = authHeaders.split(" ")[1];
+
+            try {
+                const decoded = await admin.auth().verifyIdToken(token);
+                req.decoded = decoded;
+                next();
+            }
+            catch (error) {
+                return res.status(401).json({ message: 'Unauthorized: Invalid or expired token' });
+            }
+        };
+
+        const verifyTokenEmail = async (req, res, next) => {
+            if (req?.query?.email !== req.decoded?.email) {
+                return res.status(403).json({ message: "Forbidden: Email does not match token" });
+            }
+            next();
+        }
 
         app.get('/', (req, res) => {
             res.send('🚀 QuickDrop API is running');
         });
 
         // Get all parcels OR filter by user email
-        app.get("/parcels", async (req, res) => {
+        app.get("/parcels", verifyToken, verifyTokenEmail, async (req, res) => {
             const userEmail = req.query.email;
 
             let query = {};
@@ -71,7 +108,7 @@ async function run() {
 
 
         // [GET] /payments?email=user@example.com
-        app.get("/payments", async (req, res) => {
+        app.get("/payments", verifyToken, verifyTokenEmail, async (req, res) => {
             const email = req.query.email;
             if (!email) return res.status(400).send({ error: "Email is required" });
 
@@ -87,14 +124,14 @@ async function run() {
 
 
         // Save parcels to the mongodb
-        app.post("/add-parcels", async (req, res) => {
+        app.post("/add-parcels", verifyToken, verifyTokenEmail, async (req, res) => {
             const data = req.body;
             const result = await parcelsCollection.insertOne(data);
             res.send(result);
         })
 
         // Creating payment intent for stripe
-        app.post("/createPaymentIntent", async (req, res) => {
+        app.post("/createPaymentIntent", verifyToken, verifyTokenEmail, async (req, res) => {
             const { amount } = req.body;
             const parsedAmount = parseFloat(amount);
             try {
@@ -111,7 +148,15 @@ async function run() {
         })
 
 
-        app.post("/payments", async (req, res) => {
+        // Creating users
+        app.post("/users", async (req, res) => {
+            const users = req.body;
+            const result = await usersCollection.insertOne(users);
+            res.send(result);
+        })
+
+
+        app.post("/payments", verifyToken, verifyTokenEmail, async (req, res) => {
             const payment = req.body;
 
             try {
