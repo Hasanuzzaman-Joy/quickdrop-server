@@ -54,11 +54,9 @@ async function run() {
       const authHeaders = req.headers.authorization;
 
       if (!authHeaders || !authHeaders.startsWith("Bearer ")) {
-        return res
-          .status(401)
-          .json({
-            message: "Unauthorized: No or invalid Authorization header",
-          });
+        return res.status(401).json({
+          message: "Unauthorized: No or invalid Authorization header",
+        });
       }
 
       const token = authHeaders.split(" ")[1];
@@ -137,6 +135,63 @@ async function run() {
       res.send(payments);
     });
 
+    // get role
+    app.get("/user/role/:email", async (req, res) => {
+      const email = req.params.email;
+
+      if (!email) {
+        return res.status(400).json({ error: "Email parameter is required" });
+      }
+
+      try {
+        const user = await usersCollection.findOne(
+          { email },
+          {
+            projection: {
+              role: 1, 
+              _id: 0, 
+            },
+          }
+        );
+
+        if (!user) {
+          return res.status(404).json({ error: "User not found" });
+        }
+
+        res.send(user); 
+      } catch (err) {
+        console.error("Error fetching user role:", err);
+        res.status(500).json({ error: "Server error" });
+      }
+    });
+
+    // Search user by email for admin
+    app.get("/admin/search", async (req, res) => {
+      const email = req.query.email;
+      if (!email) return res.status(400).send({ error: "Email is required" });
+
+      const user = await usersCollection
+        .find({
+          email: { $regex: email, $options: "i" },
+        })
+        .toArray();
+
+      if (!user) return res.status(404).send({ error: "User not found" });
+
+      res.send(user);
+    });
+
+    // Update role
+    app.patch("/admin/role/:id", async (req, res) => {
+      const { id } = req.params;
+      const { role } = req.body;
+      const result = await usersCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { role } }
+      );
+      res.send(result);
+    });
+
     // Get all pending riders
     app.get("/riders/pending", async (req, res) => {
       try {
@@ -154,7 +209,7 @@ async function run() {
       try {
         const approvedRiders = await ridersCollection
           .find({ status: "active" })
-          .toArray();     
+          .toArray();
         res.send(approvedRiders);
       } catch (error) {
         res.status(500).send({ error: "Failed to fetch approved riders" });
@@ -250,12 +305,15 @@ async function run() {
         );
 
         let roleResult = {};
-        if(result.modifiedCount > 0 && riderEmail){
-            const userEmail = { email : riderEmail};
-            const updateUserRole = {
-                $set:{role: "rider"}
-            }
-            const roleResult = await usersCollection.updateOne(userEmail, updateUserRole)
+        if (result.modifiedCount > 0 && riderEmail) {
+          const userEmail = { email: riderEmail };
+          const updateUserRole = {
+            $set: { role: "rider" },
+          };
+          const roleResult = await usersCollection.updateOne(
+            userEmail,
+            updateUserRole
+          );
         }
         res.send({ result, roleResult });
       } catch (err) {
