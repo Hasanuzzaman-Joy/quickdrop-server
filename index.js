@@ -50,6 +50,7 @@ async function run() {
     const ridersCollection = client
       .db("ParcelsCollection")
       .collection("riders");
+    const earningsCollection = client.db("ParcelsCollection").collection("riderEarnings");
 
     // Custom Middlewares
     const verifyToken = async (req, res, next) => {
@@ -321,6 +322,20 @@ async function run() {
       }
     });
 
+    // earning for the rider
+    app.get("/rider/earnings-raw", verifyToken, verifyTokenEmail, verifyRider, async (req, res) => {
+      const email = req.query.email;
+
+      try {
+        const earnings = await earningsCollection
+          .find({ riderEmail: email })
+          .toArray();
+
+        res.send(earnings);
+      } catch (err) {
+        res.status(500).send({ error: "Failed to fetch earnings" });
+      }
+    });
 
     // Save parcels to the mongodb
     app.post("/add-parcels", verifyToken, async (req, res) => {
@@ -365,6 +380,35 @@ async function run() {
         res.status(500).send({ error: "Internal server error" });
       }
     });
+
+    // Rider cashOut
+    app.post("/rider/cashOut", verifyToken, verifyRider, async (req, res) => {
+      const { parcelId, amount, riderEmail, riderName, trackingId } = req.body;
+
+      if (!parcelId || !amount || !riderEmail || !riderName) {
+        return res.status(400).send({ error: "Missing required cashout fields" });
+      }
+
+      try {
+        const result = await earningsCollection.insertOne({
+          trackingId,
+          amount,
+          riderEmail,
+          riderName,
+          cashOutDate: new Date(),
+        });
+
+        await parcelsCollection.updateOne(
+          { _id: new ObjectId(parcelId) },
+          { $set: { cashOut: true } }
+        );
+
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ error: "Cashout failed" });
+      }
+    });
+
 
     app.post("/payments", verifyToken, async (req, res) => {
       const payment = req.body;
@@ -464,10 +508,23 @@ async function run() {
     app.patch("/rider/update-delivery/:id", verifyToken, verifyRider, async (req, res) => {
       const id = req.params.id;
       const { status } = req.body;
+
+      const updateFields = {
+        delivery_status: status,
+      };
+
+      if (status === "in-transit") {
+        updateFields.transit_at = new Date().toISOString();
+      }
+
+      if (status === "delivered") {
+        updateFields.delivered_at = new Date().toISOString();
+      }
+
       try {
         const result = await parcelsCollection.updateOne(
           { _id: new ObjectId(id) },
-          { $set: { delivery_status: status } }
+          { $set: { updateFields } }
         );
         res.send(result);
       } catch (err) {
