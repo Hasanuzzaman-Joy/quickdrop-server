@@ -51,6 +51,7 @@ async function run() {
       .db("ParcelsCollection")
       .collection("riders");
     const earningsCollection = client.db("ParcelsCollection").collection("riderEarnings");
+    const trackingCollection = client.db("ParcelsCollection").collection("trackings");
 
     // Custom Middlewares
     const verifyToken = async (req, res, next) => {
@@ -337,6 +338,28 @@ async function run() {
       }
     });
 
+    // Getting a parcel tracking system
+    app.get('/tracking/:trackingId', async (req, res) => {
+      const { trackingId } = req.params;
+
+      try {
+        const trackingRecords = await
+          trackingCollection
+            .find({ trackingId })
+            .sort({ createdAt: 1 })  
+            .toArray();
+
+        if (trackingRecords.length === 0) {
+          return res.status(404).json({ message: 'No tracking records found for this parcel.' });
+        }
+
+        res.json(trackingRecords);
+      } catch (error) {
+        console.error('Failed to fetch tracking records:', error);
+        res.status(500).json({ message: 'Internal server error' });
+      }
+    });
+
     // Save parcels to the mongodb
     app.post("/add-parcels", verifyToken, async (req, res) => {
       const data = req.body;
@@ -409,6 +432,27 @@ async function run() {
       }
     });
 
+    // Tracking parcel
+    app.post("/tracking/:trackingId", verifyToken, async (req, res) => {
+      const { stage, description, actorEmail, actorRole } = req.body;
+      const {trackingId} = req.params;
+
+      const trackEntry = {
+        trackingId,
+        stage,
+        description,
+        actorEmail,
+        actorRole,
+        createdAt: new Date()
+      };
+
+      try {
+        const result = await trackingCollection.insertOne(trackEntry);
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ error: "Failed to save tracking info" });
+      }
+    });
 
     app.post("/payments", verifyToken, async (req, res) => {
       const payment = req.body;
