@@ -39,6 +39,7 @@ async function run() {
     // Connect the client to the server	(optional starting in v4.7)
     await client.connect();
 
+    // DB Collections
     const parcelsCollection = client
       .db("ParcelsCollection")
       .collection("parcels");
@@ -50,6 +51,7 @@ async function run() {
       .db("ParcelsCollection")
       .collection("riders");
 
+    // Custom Middlewares
     const verifyToken = async (req, res, next) => {
       const authHeaders = req.headers.authorization;
 
@@ -81,6 +83,56 @@ async function run() {
       next();
     };
 
+    const verifyAdmin = async (req, res, next) => {
+      try {
+        const email = req?.decoded?.email;
+        if (!email) {
+          return res
+            .status(401)
+            .json({ message: "Unauthorized: No email found" });
+        }
+
+        const user = await usersCollection.findOne(
+          { email },
+          { projection: { role: 1 } }
+        );
+
+        if (user?.role !== "admin") {
+          return res.status(403).json({ message: "Forbidden: Admins only" });
+        }
+
+        next();
+      } catch (error) {
+        console.error("Admin verification error:", error);
+        res.status(500).json({ message: "Server error" });
+      }
+    };
+
+    const verifyRider = async (req, res, next) => {
+      try {
+        const email = req?.decoded?.email;
+        if (!email) {
+          return res
+            .status(401)
+            .json({ message: "Unauthorized: No email found" });
+        }
+
+        const user = await usersCollection.findOne(
+          { email },
+          { projection: { role: 1 } }
+        );
+
+        if (user?.role !== "rider") {
+          return res.status(403).json({ message: "Forbidden: Riders only" });
+        }
+
+        next();
+      } catch (error) {
+        console.error("Rider verification error:", error);
+        res.status(500).json({ message: "Server error" });
+      }
+    };
+
     app.get("/", (req, res) => {
       res.send("🚀 QuickDrop API is running");
     });
@@ -102,7 +154,7 @@ async function run() {
     app.get("/parcel/:id", async (req, res) => {
       const { id } = req.params;
 
-      // ✅ Check if ID is valid MongoDB ObjectId
+      // Check if ID is valid MongoDB ObjectId
       if (!ObjectId.isValid(id)) {
         return res.status(400).json({ error: "Invalid parcel ID" });
       }
@@ -114,9 +166,25 @@ async function run() {
         if (!parcel) {
           return res.status(404).json({ error: "Parcel not found" });
         }
-        res.json(parcel); // ✅ Success response
+        res.json(parcel); // Success response
       } catch (err) {
         res.status(500).json({ error: "Server error" });
+      }
+    });
+
+    // Get pending deliveries for a specific rider
+    app.get("/rider/pending-deliveries", verifyToken, verifyRider, async (req, res) => {
+      const email = req.query.email;
+      try {
+        const deliveries = await parcelsCollection
+          .find({
+            riderEmail: email,
+            delivery_status: { $in: ["rider assigned", "in-transit"] },
+          })
+          .toArray();
+        res.send(deliveries);
+      } catch (err) {
+        res.status(500).send({ error: "Failed to fetch rider deliveries" });
       }
     });
 
@@ -136,7 +204,7 @@ async function run() {
     });
 
     // get role
-    app.get("/user/role/:email", async (req, res) => {
+    app.get("/user/role/:email", verifyToken, async (req, res) => {
       const email = req.params.email;
 
       if (!email) {
@@ -148,8 +216,8 @@ async function run() {
           { email },
           {
             projection: {
-              role: 1, 
-              _id: 0, 
+              role: 1,
+              _id: 0,
             },
           }
         );
@@ -158,7 +226,7 @@ async function run() {
           return res.status(404).json({ error: "User not found" });
         }
 
-        res.send(user); 
+        res.send(user);
       } catch (err) {
         console.error("Error fetching user role:", err);
         res.status(500).json({ error: "Server error" });
@@ -166,7 +234,7 @@ async function run() {
     });
 
     // Search user by email for admin
-    app.get("/admin/search", async (req, res) => {
+    app.get("/admin/search", verifyToken, verifyAdmin, async (req, res) => {
       const email = req.query.email;
       if (!email) return res.status(400).send({ error: "Email is required" });
 
@@ -181,19 +249,8 @@ async function run() {
       res.send(user);
     });
 
-    // Update role
-    app.patch("/admin/role/:id", async (req, res) => {
-      const { id } = req.params;
-      const { role } = req.body;
-      const result = await usersCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: { role } }
-      );
-      res.send(result);
-    });
-
     // Get all pending riders
-    app.get("/riders/pending", async (req, res) => {
+    app.get("/riders/pending", verifyToken, verifyAdmin, async (req, res) => {
       try {
         const riders = await ridersCollection
           .find({ status: "pending" })
@@ -205,7 +262,7 @@ async function run() {
     });
 
     // Get all approved riders
-    app.get("/riders/approved", async (req, res) => {
+    app.get("/riders/approved", verifyToken, verifyAdmin, async (req, res) => {
       try {
         const approvedRiders = await ridersCollection
           .find({ status: "active" })
@@ -216,38 +273,77 @@ async function run() {
       }
     });
 
-    // Save parcels to the mongodb
-    app.post(
-      "/add-parcels",
-      verifyToken,
-      verifyTokenEmail,
-      async (req, res) => {
-        const data = req.body;
-        const result = await parcelsCollection.insertOne(data);
-        res.send(result);
+    // Assign rider api
+    app.get("/parcels/unassigned", async (req, res) => {
+      try {
+        const parcels = await parcelsCollection
+          .find({
+            payment_status: "paid",
+            delivery_status: "not delivered",
+          })
+          .toArray();
+
+        res.send(parcels);
+      } catch (err) {
+        res.status(500).send({ error: "Failed to fetch unassigned parcels" });
       }
-    );
+    });
+
+    // GET /riders/available?region=Chattogram
+    app.get("/riders/available", async (req, res) => {
+      const region = req.query.region;
+      if (!region) return res.status(400).send({ error: "Region is required" });
+
+      try {
+        const riders = await ridersCollection
+          .find({ region, status: "active" })
+          .toArray();
+        res.send(riders);
+      } catch (error) {
+        res.status(500).send({ error: "Failed to fetch riders" });
+      }
+    });
+
+    // Get completed deliveries for rider
+    app.get("/rider/completed", verifyToken, verifyToken, verifyRider, async (req, res) => {
+      const { email } = req.query;
+
+      try {
+        const parcels = await parcelsCollection.find({
+          riderEmail: email,
+          delivery_status: "delivered",
+        }).toArray();
+
+        res.send(parcels);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ error: "Failed to fetch completed deliveries" });
+      }
+    });
+
+
+    // Save parcels to the mongodb
+    app.post("/add-parcels", verifyToken, async (req, res) => {
+      const data = req.body;
+      const result = await parcelsCollection.insertOne(data);
+      res.send(result);
+    });
 
     // Creating payment intent for stripe
-    app.post(
-      "/createPaymentIntent",
-      verifyToken,
-      verifyTokenEmail,
-      async (req, res) => {
-        const { amount } = req.body;
-        const parsedAmount = parseFloat(amount);
-        try {
-          const paymentIntent = await stripe.paymentIntents.create({
-            amount: parsedAmount * 100,
-            currency: "bdt",
-            payment_method_types: ["card"],
-          });
-          res.send({ clientSecret: paymentIntent.client_secret });
-        } catch (error) {
-          res.status(500).send({ error: error.message });
-        }
+    app.post("/createPaymentIntent", verifyToken, async (req, res) => {
+      const { amount } = req.body;
+      const parsedAmount = parseFloat(amount);
+      try {
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount: parsedAmount * 100,
+          currency: "bdt",
+          payment_method_types: ["card"],
+        });
+        res.send({ clientSecret: paymentIntent.client_secret });
+      } catch (error) {
+        res.status(500).send({ error: error.message });
       }
-    );
+    });
 
     // Creating users
     app.post("/users", async (req, res) => {
@@ -270,7 +366,7 @@ async function run() {
       }
     });
 
-    app.post("/payments", verifyToken, verifyTokenEmail, async (req, res) => {
+    app.post("/payments", verifyToken, async (req, res) => {
       const payment = req.body;
 
       try {
@@ -292,6 +388,17 @@ async function run() {
       } catch (err) {
         res.status(500).send({ error: err.message });
       }
+    });
+
+    // Update role
+    app.patch("/admin/role/:id", async (req, res) => {
+      const { id } = req.params;
+      const { role } = req.body;
+      const result = await usersCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { role } }
+      );
+      res.send(result);
     });
 
     // Approve a rider (update status to "active")
@@ -318,6 +425,53 @@ async function run() {
         res.send({ result, roleResult });
       } catch (err) {
         res.status(500).send({ error: "Failed to approve rider" });
+      }
+    });
+
+    app.patch("/assign-rider", async (req, res) => {
+      const { parcelId, riderId, riderName, riderEmail } = req.body;
+
+      try {
+        // 1. Update parcel
+        const parcelResult = await parcelsCollection.updateOne(
+          { _id: new ObjectId(parcelId) },
+          {
+            $set: {
+              delivery_status: "rider assigned",
+              riderName,
+              riderEmail,
+            },
+          }
+        );
+
+        // 2. Update rider status to "collected"
+        const riderResult = await ridersCollection.updateOne(
+          { _id: new ObjectId(riderId) },
+          {
+            $set: {
+              work_status: "collected",
+            },
+          }
+        );
+
+        res.send(parcelResult);
+      } catch (err) {
+        res.status(500).send({ error: "Assignment failed" });
+      }
+    });
+
+    // Update delivery status for a parcel
+    app.patch("/rider/update-delivery/:id", verifyToken, verifyRider, async (req, res) => {
+      const id = req.params.id;
+      const { status } = req.body;
+      try {
+        const result = await parcelsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { delivery_status: status } }
+        );
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ error: "Failed to update delivery status" });
       }
     });
 
