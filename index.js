@@ -346,7 +346,7 @@ async function run() {
         const trackingRecords = await
           trackingCollection
             .find({ trackingId })
-            .sort({ createdAt: 1 })  
+            .sort({ createdAt: 1 })
             .toArray();
 
         if (trackingRecords.length === 0) {
@@ -359,6 +359,46 @@ async function run() {
         res.status(500).json({ message: 'Internal server error' });
       }
     });
+
+    // Admin Dashboard Summary
+    app.get("/admin/delivery-status-summary", async (req, res) => {
+      const pipeline = [
+        {
+          $facet: {
+            deliveryStatus: [
+              {
+                $group: {
+                  _id: "$delivery_status",
+                  count: { $sum: 1 }
+                }
+              },
+              {
+                $project: {
+                  status: "$_id",
+                  count: 1,
+                  _id: 0
+                }
+              }
+            ],
+            totalOrders: [
+              {
+                $count: "total"
+              }
+            ]
+          }
+        }
+      ]
+
+
+      const result = await parcelsCollection.aggregate(pipeline).toArray();
+
+      const { deliveryStatus, totalOrders } = result[0];
+
+      res.send({
+        totalOrders: totalOrders[0]?.total || 0,
+        summary: deliveryStatus
+      });
+    })
 
     // Save parcels to the mongodb
     app.post("/add-parcels", verifyToken, async (req, res) => {
@@ -435,7 +475,7 @@ async function run() {
     // Tracking parcel
     app.post("/tracking/:trackingId", verifyToken, async (req, res) => {
       const { stage, description, actorEmail, actorRole } = req.body;
-      const {trackingId} = req.params;
+      const { trackingId } = req.params;
 
       const trackEntry = {
         trackingId,
